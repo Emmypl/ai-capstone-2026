@@ -1,30 +1,52 @@
-# physical-ai-hw3
-NYCU Physical AI 2025 Fall
+# ai-capstone-hw4
+NYCU AI Capstone 2026 Spring
 
-In your original physical-ai directory, `git pull` to get new `hw3` directory.
+In your original ai-capstone directory, `git pull` to get new `hw4` directory.
 
-# hw3 Robot Manipulation
+# hw4 Robot Manipulation
+
+Homework4 Document: [Link](https://docs.google.com/document/d/1K29VWRyrtk-1Y8lDYBHqhRm5T5tt8XI2F1sLEA7vJ9w/edit?usp=sharing) 
 
 ## Installation
 
-Follow the installation instruction in https://github.com/google-research/ravens
 
-1. Create and activate Conda environment, then install GCC and Python packages.
+There are two ways to create your environment(choose one for your hw4):
 
+first way(on Glows.ai):
+1. [Glows.ai](https://docs.google.com/presentation/d/1oKdlhMkB-DIS8_hGv_97MqcMtsDmft48aCoy6GeyW1A/edit?usp=sharing)
+
+second way(on Local machine):
+
+choose one way to develope your homework 4
+1. Create pip environment(Ubuntu)
 ```shell
-git pull
-cd hw3
-cd ravens
-conda create --name pdm-hw3 python=3.7 -y
-conda activate pdm-hw3
-sudo apt-get update
-sudo apt-get -y install gcc libgl1-mesa-dev
-pip install -r requirements.txt
+cd hw4
+# 安裝全部
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+uv sync
+
+# Task 1 with GUI
+python fk.py
+# Task 2 with GUI
+python ik.py
 ```
-2. Install GPU acceleration with NVIDIA CUDA 10.1 and cuDNN 7.6.5 for Tensorflow.
-```bash
-conda install cudatoolkit==10.1.243 -y
-conda install cudnn==7.6.5 -y
+2. Using docker environment, then install Python packages.(Ubuntu/MacOS)
+```shell
+cd hw4
+# Task 1 without GUI
+python3 docker.py run-fk --headless
+
+# Task 2 with GUI
+python3 docker.py run-ik
+
+#or
+
+# Task 2 without GUI
+python3 docker.py run-ik --headless
+
+# Task 2 with GUI
+python3 docker.py run-ik
 ```
 ## Task 1
 
@@ -72,50 +94,3 @@ python ik.py
 - Your Total Score : 40.000 / 40.000
 ====================================================================================
 ```
-
-## Task 3
-
-Test your ik implementation in the Transporter Networks 's frame work by inferencing "Block Insertion Task" on a mini set of 10 testing data
-
-**Step 1.** Download dataset at https://drive.google.com/file/d/1Jh8hAvraT1Zt1YfSNRT_lMJXbsK4Wcse/view?usp=sharing and put the whole `block-insertion-easy-test/` folder under `hw3/ravens/`
-
-**Step 2.** Download checkpoint at https://drive.google.com/file/d/1cmFbqTzuu6IUJPlx1eOq2djRSubfM94H/view?usp=sharing and put the whole `checkpoints/` folder under `hw3/ravens/`
-
-**Step 3.** Testing the model and your ik implementation 
-- execution example
- ```shell
-cd ravens
-CUDA_VISIBLE_DEVICES=-1 python ravens/test.py --assets_root=./ravens/environments/assets/ --disp=True --task=block-insertion-easy --agent=transporter --n_demos=1000 --n_steps=20000# No need to use GPU
-###################################### log ###########################################
-
-Loading pre-trained model at 20000 iterations.
-============================ Task 3 : Transporter Network ============================
-
-Test: 1/10
-Instructions for updating:
-Simply pass a True/False value to the `training` argument of the `__call__` method of your layer or model.
-Total Reward: 1.0 Done: True
-Test: 2/10
-Total Reward: 1.0 Done: True
-Test: 3/10
-Total Reward: 1.0 Done: True
-Test: 4/10
-Total Reward: 1.0 Done: True
-Test: 5/10
-Total Reward: 1.0 Done: True
-Test: 6/10
-Total Reward: 1.0 Done: True
-Test: 7/10
-Total Reward: 1.0 Done: True
-Test: 8/10
-Total Reward: 1.0 Done: True
-Test: 9/10
-Total Reward: 1.0 Done: True
-Test: 10/10
-Total Reward: 1.0 Done: True
-====================================================================================
-- Your Total Score : 10.000 / 10.000
-====================================================================================
- ```
-# Reference
-https://github.com/google-research/ravens

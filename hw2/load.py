@@ -8,12 +8,12 @@ import os
 import sys
 import argparse
 import shutil
-
+import magnum as mn
 
 # This is the scene we are going to load.
 # support a variety of mesh formats, such as .glb, .gltf, .obj, .ply
 ### put your scene path ###
-test_scene = "replica_v1/apartment_0/habitat/mesh_semantic.ply"
+test_scene = "../data/replica_v1/apartment_0/habitat/mesh_semantic.ply"
 
 sim_settings = {
     "scene": test_scene,  # Scene path
@@ -60,12 +60,13 @@ def make_simple_cfg(settings):
     rgb_sensor_spec.uuid = "color_sensor"
     rgb_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
     rgb_sensor_spec.resolution = [settings["height"], settings["width"]]
-    rgb_sensor_spec.position = [0.0, settings["sensor_height"], 0.0]
-    rgb_sensor_spec.orientation = [
-        settings["sensor_pitch"],
-        0.0,
-        0.0,
-    ]
+    rgb_sensor_spec.position = mn.Vector3(0.0, settings["sensor_height"], 0.0)
+    # rgb_sensor_spec.orientation = [
+    #     settings["sensor_pitch"],
+    #     0.0,
+    #     0.0,
+    # ]
+    rgb_sensor_spec.orientation = mn.Vector3(0.0, 0.0, 0.0) # CHANGE
     rgb_sensor_spec.sensor_subtype = habitat_sim.SensorSubType.PINHOLE
 
     #depth snesor
@@ -73,12 +74,13 @@ def make_simple_cfg(settings):
     depth_sensor_spec.uuid = "depth_sensor"
     depth_sensor_spec.sensor_type = habitat_sim.SensorType.DEPTH
     depth_sensor_spec.resolution = [settings["height"], settings["width"]]
-    depth_sensor_spec.position = [0.0, settings["sensor_height"], 0.0]
-    depth_sensor_spec.orientation = [
-        settings["sensor_pitch"],
-        0.0,
-        0.0,
-    ]
+    depth_sensor_spec.position = mn.Vector3(0.0, settings["sensor_height"], 0.0)
+    # depth_sensor_spec.orientation = [
+    #     settings["sensor_pitch"],
+    #     0.0,
+    #     0.0,
+    # ]
+    depth_sensor_spec.orientation = mn.Vector3(0.0, 0.0, 0.0) # CHANGE
     depth_sensor_spec.sensor_subtype = habitat_sim.SensorSubType.PINHOLE
 
     #semantic snesor
@@ -86,12 +88,8 @@ def make_simple_cfg(settings):
     semantic_sensor_spec.uuid = "semantic_sensor"
     semantic_sensor_spec.sensor_type = habitat_sim.SensorType.SEMANTIC
     semantic_sensor_spec.resolution = [settings["height"], settings["width"]]
-    semantic_sensor_spec.position = [0.0, settings["sensor_height"], 0.0]
-    semantic_sensor_spec.orientation = [
-        settings["sensor_pitch"],
-        0.0,
-        0.0,
-    ]
+    semantic_sensor_spec.position = mn.Vector3(0.0, settings["sensor_height"], 0.0)
+    semantic_sensor_spec.orientation = mn.Vector3(settings["sensor_pitch"], 0.0, 0.0)
     semantic_sensor_spec.sensor_subtype = habitat_sim.SensorSubType.PINHOLE
 
     agent_cfg.sensor_specifications = [rgb_sensor_spec, depth_sensor_spec, semantic_sensor_spec]

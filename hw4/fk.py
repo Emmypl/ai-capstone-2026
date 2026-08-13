@@ -1,13 +1,150 @@
 import os, argparse, json
 import numpy as np
+import traceback
 
 from scipy.spatial.transform import Rotation as R
 
-# for simulator
-import pybullet as p
+def get_matrix_from_pose(pose) -> np.ndarray:
+    """Convert a 6D/7D pose vector into a 4x4 homogeneous transform.
 
-# for geometry information
-from hw3_utils.bullet_utils import draw_coordinate, get_matrix_from_pose, get_pose_from_matrix, pose_7d_to_6d, pose_6d_to_7d
+    Parameters
+    ----------
+    pose : list | tuple | np.ndarray
+        Pose representation.
+        - 6 elements: ``[x, y, z, rx, ry, rz]`` where ``r*`` is a rotation vector.
+        - 7 elements: ``[x, y, z, qx, qy, qz, qw]`` quaternion.
+
+    Returns
+    -------
+    np.ndarray
+        A 4x4 homogeneous transform matrix in float64.
+
+    Notes
+    -----
+    This helper is commonly used in robotics pipelines to switch between
+    vector pose representation and matrix-based transform composition.
+    """
+    assert len(pose) in (6, 7), f'pose must contain 6 or 7 elements, but got {len(pose)}'
+    pos_m = np.asarray(pose[:3], dtype=np.float64)
+
+    if len(pose) == 6:
+        rot_m = R.from_rotvec(np.asarray(pose[3:], dtype=np.float64)).as_matrix()
+    else:
+        rot_m = R.from_quat(np.asarray(pose[3:], dtype=np.float64)).as_matrix()
+
+    ret_m = np.identity(4, dtype=np.float64)
+    ret_m[:3, :3] = rot_m
+    ret_m[:3, 3] = pos_m
+    return ret_m
+
+def get_pose_from_matrix(matrix, pose_size : int = 7) -> np.ndarray:
+    """Convert a 4x4 homogeneous transform into a 6D or 7D pose vector.
+
+    Parameters
+    ----------
+    matrix : list | tuple | np.ndarray
+        4x4 transform matrix.
+    pose_size : int, default=7
+        Output pose format.
+        - 6: ``[x, y, z, rx, ry, rz]`` (rotation vector)
+        - 7: ``[x, y, z, qx, qy, qz, qw]`` (quaternion)
+
+    Returns
+    -------
+    np.ndarray
+        Pose vector in float64.
+
+    Notes
+    -----
+    If the rotation block is numerically unstable (e.g., det <= 0), this
+    function projects it to the nearest orthonormal matrix via SVD first.
+    """
+    mat = np.asarray(matrix, dtype=np.float64)
+    assert pose_size in (6, 7), f'pose_size should be 6 or 7, but got {pose_size}'
+    assert mat.shape == (4, 4), f'pose must contain 4 x 4 elements, but got {mat.shape}'
+
+    pos = mat[:3, 3]
+
+    # --- 安全生成旋轉 ---
+    rot_mat = mat[:3, :3]
+    try:
+        if pose_size == 6:
+            rot = R.from_matrix(rot_mat).as_rotvec()
+        else:
+            rot = R.from_matrix(rot_mat).as_quat()
+    except ValueError:
+        # 如果 det<=0，修正成最近正交矩陣
+        U, _, Vt = np.linalg.svd(rot_mat)
+        rot_mat_fixed = U @ Vt
+        if pose_size == 6:
+            rot = R.from_matrix(rot_mat_fixed).as_rotvec()
+        else:
+            rot = R.from_matrix(rot_mat_fixed).as_quat()
+
+    return np.asarray(list(pos) + list(rot), dtype=np.float64)
+
+
+def _acquire_isaac_debug_draw_interface():
+    """Acquire the Isaac Sim persistent debug draw interface.
+
+    Returns
+    -------
+    object | None
+        Debug draw interface object if available; otherwise ``None``.
+
+    Notes
+    -----
+    This function enables the extension at runtime and gracefully degrades if
+    the extension is unavailable.
+    """
+    try:
+        from isaacsim.core.utils.extensions import enable_extension
+        enable_extension("isaacsim.util.debug_draw")
+        from isaacsim.util.debug_draw import _debug_draw
+        return _debug_draw.acquire_debug_draw_interface()
+    except Exception:
+        return None
+
+
+def _draw_pose_axes_isaac(debug_draw, pose7d, axis_len=0.02, width=2.0,
+                          color_x=(1.0, 0.0, 0.0, 1.0),
+                          color_y=(0.0, 1.0, 0.0, 1.0),
+                          color_z=(0.0, 0.0, 1.0, 1.0)):
+    """Draw XYZ axes for a 7D pose using Isaac persistent debug lines.
+
+    Parameters
+    ----------
+    debug_draw : object
+        Interface returned by ``_acquire_isaac_debug_draw_interface``.
+    pose7d : list | tuple | np.ndarray
+        Pose vector ``[x, y, z, qx, qy, qz, qw]``.
+    axis_len : float, default=0.02
+        Axis line length in meters.
+    width : float, default=2.0
+        Rendered line width.
+    color_x, color_y, color_z : tuple[float, float, float, float]
+        RGBA colors for x/y/z axes.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Axis visualization helps students compare estimated and ground-truth end-
+    effector orientation directly in the simulator.
+    """
+    if debug_draw is None:
+        return
+    T = get_matrix_from_pose(np.asarray(pose7d, dtype=np.float64))
+    o = T[:3, 3]
+    x_end = o + axis_len * T[:3, 0]
+    y_end = o + axis_len * T[:3, 1]
+    z_end = o + axis_len * T[:3, 2]
+
+    debug_draw.draw_lines([tuple(o)], [tuple(x_end)], [color_x], [float(width)])
+    debug_draw.draw_lines([tuple(o)], [tuple(y_end)], [color_y], [float(width)])
+    debug_draw.draw_lines([tuple(o)], [tuple(z_end)], [color_z], [float(width)])
 
 SIM_TIMESTEP = 1.0 / 240.0
 JACOBIAN_SCORE_MAX = 10.0
@@ -17,9 +154,35 @@ FK_ERROR_THRESH = 0.005
 TASK1_SCORE_MAX = JACOBIAN_SCORE_MAX + FK_SCORE_MAX
 
 def cross(a : np.ndarray, b : np.ndarray) -> np.ndarray :
+    """Compute the 3D vector cross product.
+
+    Parameters
+    ----------
+    a : np.ndarray
+        First 3D vector.
+    b : np.ndarray
+        Second 3D vector.
+
+    Returns
+    -------
+    np.ndarray
+        Cross product ``a x b``.
+    """
     return np.cross(a, b)
 
 def get_ur5_DH_params():
+    """Return homework-specific UR5 classic DH parameters.
+
+    Returns
+    -------
+    list[dict]
+        Six DH dictionaries containing ``a``, ``d``, and ``alpha``.
+
+    Notes
+    -----
+    The parameters are tailored to this assignment setup and may differ from
+    official UR documentation.
+    """
 
     # TODO: this is the DH parameters (following classic DH convention) of the robot in this assignment,
     # It will be a little bit different from the official spec 
@@ -39,8 +202,45 @@ def get_ur5_DH_params():
 
     return dh_params
 
-def your_fk(DH_params : dict, q : list or tuple or np.ndarray, base_pos) -> np.ndarray:
+def your_fk(DH_params : dict, q, base_pos) -> np.ndarray:
+    """Compute FK pose and geometric Jacobian from DH parameters.
 
+    Parameters
+    ----------
+    DH_params : dict
+        Per-joint DH parameter dictionaries for 6 joints.
+    q : list | tuple | np.ndarray
+        Joint angles (radians), length 6.
+    base_pos : list | tuple | np.ndarray
+        Robot base translation ``[x, y, z]`` in world frame.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        - pose_7d: ``[x, y, z, qx, qy, qz, qw]``
+        - jacobian: 6x6 geometric Jacobian in base frame
+
+    Homework Hints
+    --------------
+    What to implement:
+    1. Multiply classic DH transforms along the kinematic chain.
+    2. Collect joint axis/origin in base frame.
+    3. Build Jacobian columns with:
+       ``Jv_i = z_i x (p_end - p_i)`` and ``Jw_i = z_i``.
+
+    Example
+    -------
+    ```python
+    dh = get_ur5_DH_params()
+    q = np.zeros(6)
+    pose, jac = your_fk(dh, q, np.array([-0.2, 0.13, 0.6]))
+    ```
+
+    Notes
+    -----
+    This implementation intentionally avoids simulator APIs so students can
+    focus on pure kinematics math.
+    """
     # robot initial position
     base_pose = list(base_pos) + [0, 0, 0]  
 
@@ -78,133 +278,198 @@ def your_fk(DH_params : dict, q : list or tuple or np.ndarray, base_pos) -> np.n
 
     return pose_7d, jacobian
 
-# TODO: [for your information]
-# This function is the scoring function, we will use the same code 
-# to score your algorithm using all the testcases
-def score_fk(robot, testcase_files : str, visualize : bool=False):
 
-    testcase_file_num = len(testcase_files)
-    dh_params = get_ur5_DH_params()
-    fk_score = [FK_SCORE_MAX / testcase_file_num for _ in range(testcase_file_num)]
-    fk_error_cnt = [0 for _ in range(testcase_file_num)]
-    jacobian_score = [JACOBIAN_SCORE_MAX / testcase_file_num for _ in range(testcase_file_num)]
-    jacobian_error_cnt = [0 for _ in range(testcase_file_num)]
+def score_fk(student_fk_function, headless=False, visualize_pose=False):
+    """Run official FK/Jacobian scoring for a student function.
 
-    p.addUserDebugText(text = "Scoring Your Forward Kinematic Algorithm ...", 
-                        textPosition = [0.1, -0.6, 1.5],
-                        textColorRGB = [1,1,1],
-                        textSize = 1.0,
-                        lifeTime = 0)
+    Parameters
+    ----------
+    student_fk_function : Callable
+        Student FK function with signature compatible with
+        ``student_fk_function(DH_params, q, base_pos)`` returning
+        ``(pose_7d, jacobian_6x6)``.
+    headless : bool, default=False
+        Whether Isaac Sim runs without GUI.
+    visualize_pose : bool, default=False
+        Whether to draw predicted/ground-truth axes and trajectories.
 
-    print("============================ Task 1 : Forward Kinematic ============================\n")
-    for file_id, testcase_file in enumerate(testcase_files):
+    Returns
+    -------
+    dict
+        Score summary including per-file and total scores.
 
-        f_in = open(testcase_file, 'r')
-        fk_dict = json.load(f_in)
-        f_in.close()
-        
-        test_case_name = os.path.split(testcase_file)[-1]
+    Notes
+    -----
+    The simulator and debug-draw behavior is intentionally kept the same as
+    the original main-loop logic.
+    """
+    try:
+        from isaacsim import SimulationApp
+    except ImportError as exc:
+        raise ImportError("Isaac Sim python modules are not available in current environment.") from exc
 
-        joint_poses = fk_dict['joint_poses']
-        poses = fk_dict['poses']
-        jacobians = fk_dict['jacobian']
+    sim_app = SimulationApp({"headless": bool(headless), "width": 1280, "height": 720})
 
-        cases_num = len(fk_dict['joint_poses'])
+    try:
+        from isaacsim.core.api import World
 
-        penalty = (TASK1_SCORE_MAX / testcase_file_num) / (0.3 * cases_num)
+        world = World(stage_units_in_meters=1.0)
+        world.scene.add_default_ground_plane()
+        world.reset()  # Ensure physics and scene are initialized.
 
-        for i in range(cases_num):
-            your_pose, your_jacobian = your_fk(dh_params, joint_poses[i], robot._base_position)
-            gt_pose = poses[i]
+        debug_draw = _acquire_isaac_debug_draw_interface()
+        if debug_draw is not None:
+            debug_draw.clear_lines()
+            debug_draw.clear_points()
+        elif visualize_pose:
+            print("[Warning] isaacsim.util.debug_draw is unavailable; skipping pose visualization.")
 
-            if visualize :
-                color_yours = [[1,0,0], [1,0,0], [1,0,0]]
-                color_gt = [[0,1,0], [0,1,0], [0,1,0]]
-                draw_coordinate(your_pose, size=0.01, color=color_yours)
-                draw_coordinate(gt_pose, size=0.01, color=color_gt)
+        # Warm-up stepping to stabilize world state.
+        for _ in range(10):
+            world.step(render=not headless)
 
-            fk_error = np.linalg.norm(your_pose - np.asarray(gt_pose), ord=2)
-            
-            
-     
-            if fk_error > FK_ERROR_THRESH:
-                fk_score[file_id] -= penalty
-                fk_error_cnt[file_id] += 1
+        testcase_files = [
+            'test_case/fk_test_case_easy.json',
+            'test_case/fk_test_case_medium.json',
+            'test_case/fk_test_case_hard.json',
+        ]
 
-            jacobian_error = np.linalg.norm(your_jacobian - np.asarray(jacobians[i]), ord=2)
-            if jacobian_error > JACOBIAN_ERROR_THRESH:
-                jacobian_score[file_id] -= penalty
-                jacobian_error_cnt[file_id] += 1
-        
-        fk_score[file_id] = 0.0 if fk_score[file_id] < 0.0 else fk_score[file_id]
-        jacobian_score[file_id] = 0.0 if jacobian_score[file_id] < 0.0 else jacobian_score[file_id]
+        dh_params = get_ur5_DH_params()
+        base_pos = np.asarray([-0.2, 0.13, 0.6], dtype=np.float64)
 
-        score_msg = "- Testcase file : {}\n".format(test_case_name) + \
-                    "- Your Score Of Forward Kinematic : {:00.03f} / {:00.03f}, Error Count : {:4d} / {:4d}\n".format(
-                            fk_score[file_id], FK_SCORE_MAX / testcase_file_num, fk_error_cnt[file_id], cases_num) + \
-                    "- Your Score Of Jacobian Matrix   : {:00.03f} / {:00.03f}, Error Count : {:4d} / {:4d}\n".format(
-                            jacobian_score[file_id], JACOBIAN_SCORE_MAX / testcase_file_num, jacobian_error_cnt[file_id], cases_num)
-        
-        print(score_msg)
-    p.removeAllUserDebugItems()
+        testcase_file_num = len(testcase_files)
+        fk_score = [FK_SCORE_MAX / testcase_file_num for _ in range(testcase_file_num)]
+        fk_error_cnt = [0 for _ in range(testcase_file_num)]
+        jacobian_score = [JACOBIAN_SCORE_MAX / testcase_file_num for _ in range(testcase_file_num)]
+        jacobian_error_cnt = [0 for _ in range(testcase_file_num)]
 
-    total_fk_score = 0.0
-    total_jacobian_score = 0.0
-    for file_id in range(testcase_file_num):
-        total_fk_score += fk_score[file_id]
-        total_jacobian_score += jacobian_score[file_id]
-    
-    print("====================================================================================")
-    print("- Your Total Score : {:00.03f} / {:00.03f}".format(
-        total_fk_score + total_jacobian_score, FK_SCORE_MAX + JACOBIAN_SCORE_MAX))
-    print("====================================================================================")
+        print("============================ Task 1 : Forward Kinematic ============================\n")
+        for file_id, testcase_file in enumerate(testcase_files):
+
+            with open(testcase_file, 'r') as f_in:
+                fk_dict = json.load(f_in)
+
+            test_case_name = os.path.split(testcase_file)[-1]
+
+            joint_poses = fk_dict['joint_poses']
+            poses = fk_dict['poses']
+            jacobians = fk_dict['jacobian']
+
+            cases_num = len(fk_dict['joint_poses'])
+            penalty = (TASK1_SCORE_MAX / testcase_file_num) / (0.3 * cases_num)
+
+            pred_traj = []
+            gt_traj = []
+
+            for i in range(cases_num):
+                your_pose, your_jacobian = student_fk_function(dh_params, joint_poses[i], base_pos)
+                gt_pose = poses[i]
+
+                if visualize_pose and debug_draw is not None:
+                    pred_traj.append(tuple(np.asarray(your_pose[:3], dtype=np.float64)))
+                    gt_traj.append(tuple(np.asarray(gt_pose[:3], dtype=np.float64)))
+
+                    _draw_pose_axes_isaac(
+                        debug_draw,
+                        your_pose,
+                        axis_len=0.02,
+                        width=2.0,
+                        color_x=(1.0, 0.0, 0.0, 1.0),
+                        color_y=(0.0, 1.0, 0.0, 1.0),
+                        color_z=(0.0, 0.0, 1.0, 1.0),
+                    )
+                    _draw_pose_axes_isaac(
+                        debug_draw,
+                        gt_pose,
+                        axis_len=0.02,
+                        width=1.0,
+                        color_x=(1.0, 0.5, 0.5, 1.0),
+                        color_y=(0.5, 1.0, 0.5, 1.0),
+                        color_z=(0.5, 0.5, 1.0, 1.0),
+                    )
+
+                    if len(pred_traj) >= 2:
+                        debug_draw.draw_lines([pred_traj[-2]], [pred_traj[-1]], [(1.0, 1.0, 0.0, 1.0)], [2.0])
+                    if len(gt_traj) >= 2:
+                        debug_draw.draw_lines([gt_traj[-2]], [gt_traj[-1]], [(0.0, 1.0, 1.0, 1.0)], [1.5])
+
+                fk_error = np.linalg.norm(your_pose - np.asarray(gt_pose), ord=2)
+                if fk_error > FK_ERROR_THRESH:
+                    fk_score[file_id] -= penalty
+                    fk_error_cnt[file_id] += 1
+
+                jacobian_error = np.linalg.norm(your_jacobian - np.asarray(jacobians[i]), ord=2)
+                if jacobian_error > JACOBIAN_ERROR_THRESH:
+                    jacobian_score[file_id] -= penalty
+                    jacobian_error_cnt[file_id] += 1
+
+                world.step(render=not headless)
+
+            fk_score[file_id] = 0.0 if fk_score[file_id] < 0.0 else fk_score[file_id]
+            jacobian_score[file_id] = 0.0 if jacobian_score[file_id] < 0.0 else jacobian_score[file_id]
+
+            score_msg = "- Testcase file : {}\n".format(test_case_name) + \
+                        "- Your Score Of Forward Kinematic : {:00.03f} / {:00.03f}, Error Count : {:4d} / {:4d}\n".format(
+                                fk_score[file_id], FK_SCORE_MAX / testcase_file_num, fk_error_cnt[file_id], cases_num) + \
+                        "- Your Score Of Jacobian Matrix   : {:00.03f} / {:00.03f}, Error Count : {:4d} / {:4d}\n".format(
+                                jacobian_score[file_id], JACOBIAN_SCORE_MAX / testcase_file_num, jacobian_error_cnt[file_id], cases_num)
+
+            print(score_msg)
+
+        total_fk_score = 0.0
+        total_jacobian_score = 0.0
+        for file_id in range(testcase_file_num):
+            total_fk_score += fk_score[file_id]
+            total_jacobian_score += jacobian_score[file_id]
+
+        print("====================================================================================")
+        print("- Your Total Score : {:00.03f} / {:00.03f}".format(
+            total_fk_score + total_jacobian_score, FK_SCORE_MAX + JACOBIAN_SCORE_MAX))
+        print("====================================================================================")
+
+        return {
+            "fk_score": fk_score,
+            "fk_error_count": fk_error_cnt,
+            "jacobian_score": jacobian_score,
+            "jacobian_error_count": jacobian_error_cnt,
+            "total_score": total_fk_score + total_jacobian_score,
+        }
+
+    except Exception:
+        print("\n[Error] following are the error messages:")
+        traceback.print_exc()
+        print("--------------------------------------------------\n")
+        raise
+
+    finally:
+        sim_app.close()
 
 def main(args):
+    """CLI entry point for FK homework evaluation.
 
-    # ------------------------ #
-    # --- Setup simulation --- #
-    # ------------------------ #
+    Parameters
+    ----------
+    args : argparse.Namespace
+        Command-line options. ``headless`` and ``visualize_pose`` are forwarded
+        to the scorer.
 
-    # Create pybullet env without GUI
-    visualize = args.gui
-    physics_client_id = p.connect(p.GUI if visualize else p.DIRECT)
-    p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
-    p.resetDebugVisualizerCamera(
-        cameraDistance=0.5,
-        cameraYaw=90,
-        cameraPitch=0,
-        cameraTargetPosition=[0.7, 0.0, 1.0]
+    Returns
+    -------
+    dict
+        Score summary from ``score_fk``.
+    """
+    return score_fk(
+        your_fk,
+        headless=bool(args.headless),
+        visualize_pose=bool(args.visualize_pose),
     )
-    p.resetSimulation()
-    p.setPhysicsEngineParameter(numSolverIterations=150)
-
-    # ------------------- #
-    # --- Setup robot --- #
-    # ------------------- #
-
-    # goto initial pose
-    from pybullet_robot_envs.envs.ur5_envs.ur5_env import ur5Env
-    robot = ur5Env(physics_client_id, use_IK=1)
-
-    # -------------------------------------------- #
-    # --- Test your Forward Kinematic function --- #
-    # -------------------------------------------- #
-
-    testcase_files = [
-        'test_case/fk_test_case_easy.json',
-        'test_case/fk_test_case_medium.json',
-        'test_case/fk_test_case_hard.json',
-        # 'test_case/fk_test_case_ta1.json',
-        # 'test_case/fk_test_case_ta2.json',
-    ]
-
-    # scoring your algorithm
-    score_fk(robot, testcase_files, visualize=args.visualize_pose)
 
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--headless', action='store_true', default=False,
+                        help='run Isaac Sim without rendering window')
     parser.add_argument('--gui', '-g', action='store_true', default=False, help='gui : whether show the window')
-    parser.add_argument('--visualize-pose', '-vp', action='store_true', default=False, help='whether show the poses of end effector')
+    parser.add_argument('--visualize-pose', '-vp', action='store_true', default=True, help='whether show the poses of end effector')
     args = parser.parse_args()
     main(args)
